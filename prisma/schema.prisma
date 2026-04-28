@@ -1,0 +1,106 @@
+// Tells Prisma to use SQLite — a simple single-file database stored on your laptop.
+// No server needed; the database lives in prisma/dev.db.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// One row per AI agent (Maestro, Quinn, Raven, Atlas, Forge).
+// The system prompt can be edited in the UI without redeploying code.
+model Agent {
+  id                String   @id @default(cuid())
+  name              String   @unique
+  role              String
+  systemPrompt      String
+  permissionLevel   String   // e.g. GENERATE, RECOMMEND, BLOCK
+  mayDo             String   // plain-English list of allowed actions
+  mayNotDo          String   // plain-English list of forbidden actions
+  decisionAuthority String   // what this agent is allowed to decide
+  status            String   @default("idle") // idle | running | error
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  agentRuns  AgentRun[]
+  decisions  Decision[]
+}
+
+// One row per user-submitted idea/task. Status moves forward as agents run.
+model Task {
+  id          String   @id @default(cuid())
+  title       String
+  description String
+  status      String   @default("DRAFT")
+  // DRAFT → ROUTING → RESEARCHING → RED_TEAMING → RISK_REVIEW
+  // → AWAITING_HUMAN → BUILDING_PROMPT → DONE  (or REJECTED at any step)
+  finalPrompt String?  // set by Forge when status reaches DONE
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  agentRuns  AgentRun[]
+  decisions  Decision[]
+  auditLogs  AuditLog[]
+}
+
+// One row per time an agent was called for a task.
+// Stores raw input, raw output, and any error so you can debug failures.
+model AgentRun {
+  id           String    @id @default(cuid())
+  taskId       String
+  agentId      String
+  inputText    String
+  outputJson   String    @default("{}") // raw JSON string from the agent
+  reasoning    String    @default("")   // agent's chain-of-thought if extracted
+  status       String    @default("pending") // pending | completed | failed
+  errorMessage String?
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+
+  task  Task  @relation(fields: [taskId], references: [id])
+  agent Agent @relation(fields: [agentId], references: [id])
+}
+
+// One row per meaningful decision an agent made.
+// Keeps a human-readable audit trail separate from the raw run logs.
+model Decision {
+  id                   String    @id @default(cuid())
+  taskId               String
+  agentId              String
+  decisionType         String    // e.g. ROUTING, RESEARCH, RED_TEAM, RISK, BUILD
+  verdict              String    // e.g. PROCEED, APPROVE, REJECT, PASS, FAIL
+  reasoningSummary     String
+  confidence           Int       // 0-100
+  requiresHumanApproval Boolean  @default(false)
+  humanApprovedAt      DateTime?
+  humanApprovedBy      String?
+  humanRejectedAt      DateTime?
+  humanRejectionReason String?
+  createdAt            DateTime  @default(now())
+
+  task  Task  @relation(fields: [taskId], references: [id])
+  agent Agent @relation(fields: [agentId], references: [id])
+}
+
+// Append-only event log. Every significant action writes here.
+// Think of it like a flight recorder — never edited, only appended.
+model AuditLog {
+  id        String   @id @default(cuid())
+  timestamp DateTime @default(now())
+  actorType String   // AGENT | HUMAN | SYSTEM
+  actorName String
+  action    String   // e.g. AGENT_RUN_STARTED, DECISION_RECORDED, HUMAN_APPROVED
+  taskId    String?
+  details   String   // free-form description of what happened
+
+  task Task? @relation(fields: [taskId], references: [id])
+}
+
+// Key-value store for app-wide settings (e.g., session tokens).
+model Setting {
+  key   String @id
+  value String
+}
